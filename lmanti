@@ -1,93 +1,153 @@
---// Cache
-
 local getgenv, getnamecallmethod, hookmetamethod, hookfunction, newcclosure, checkcaller, lower, gsub, match = getgenv, getnamecallmethod, hookmetamethod, hookfunction, newcclosure, checkcaller, string.lower, string.gsub, string.match
 
---// Loaded check
+if getgenv().ED_AntiKick then return end
 
-if getgenv().ED_AntiKick then
-	return
-end
+local cloneref = cloneref or function(...) return ... end
+local clonefunction = clonefunction or function(...) return ... end
 
---// Variables
-
-local cloneref = cloneref or function(...) 
-	return ...
-end
-
-local clonefunction = clonefunction or function(...)
-	return ...
-end
-
-local Players, LocalPlayer, StarterGui = cloneref(game:GetService("Players")), cloneref(game:GetService("Players").LocalPlayer), cloneref(game:GetService("StarterGui"))
-
+local Players, LocalPlayer, StarterGui, ReplicatedStorage = cloneref(game:GetService("Players")), cloneref(game:GetService("Players").LocalPlayer), cloneref(game:GetService("StarterGui")), cloneref(game:GetService("ReplicatedStorage"))
 local SetCore = clonefunction(StarterGui.SetCore)
---local GetDebugId = clonefunction(game.GetDebugId)
 local FindFirstChild = clonefunction(game.FindFirstChild)
 
-local CompareInstances = (CompareInstances and function(Instance1, Instance2)
-		if typeof(Instance1) == "Instance" and typeof(Instance2) == "Instance" then
-			return CompareInstances(Instance1, Instance2)
-		end
-	end)
-or
-function(Instance1, Instance2)
-	return (typeof(Instance1) == "Instance" and typeof(Instance2) == "Instance")-- and GetDebugId(Instance1) == GetDebugId(Instance2)
-end
+local CompareInstances = (CompareInstances or function(Instance1, Instance2)
+	return (typeof(Instance1) == "Instance" and typeof(Instance2) == "Instance" and rawequal(Instance1, Instance2))
+end)
 
 local CanCastToSTDString = function(...)
 	return pcall(FindFirstChild, game, ...)
 end
 
---// Global Variables
-
 getgenv().ED_AntiKick = {
-	Enabled = true, -- Set to false if you want to disable the Anti-Kick.
-	SendNotifications = true, -- Set to true if you want to get notified for every event.
-	CheckCaller = true -- Set to true if you want to disable kicking by other user executed scripts.
+	Enabled = true,
+	SendNotifications = true,
+	CheckCaller = true 
 }
 
---// Main
+local moderatorRemotes = {
+	"PardonRedFlags", "RequestCachedPlayers", "RequestPlayer", "RequestPlayerData",
+	"Ban", "Kick", "Join", "CheckTop100Streaks", "CheckTop100TrueStreaks", "UpdateBanData",
+	"UpdatePlayerData", "SaveData", "LogDetection", "FlagPlayer", "ReportDetection",
+	"RecordAction", "UpdateBan", "AddFlag", "SyncData", "ModerationAction"
+}
 
-local OldNamecall; OldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(...)
-	local self, message = ...
-	local method = getnamecallmethod()
-	
-	if ((getgenv().ED_AntiKick.CheckCaller and not checkcaller()) or true) and CompareInstances(self, LocalPlayer) and gsub(method, "^%l", string.upper) == "Kick" and ED_AntiKick.Enabled then
-		if CanCastToSTDString(message) then
-			if getgenv().ED_AntiKick.SendNotifications then
-				SetCore(StarterGui, "SendNotification", {
-					Title = "Lumin Hub",
-					Text = "Successfully intercepted an attempted kick.",
-					Icon = "rbxassetid://71516332224921",
-					Duration = 2
-				})
-			end
-
-			return
+local OldDebugInfo; OldDebugInfo = hookfunction(debug.info, newcclosure(function(lvl, ...)
+	if not checkcaller() then
+		if lvl == 2 or lvl == 3 then
+			return OldDebugInfo(lvl, ...)
 		end
 	end
-
-	return OldNamecall(...)
+	return OldDebugInfo(lvl, ...)
 end))
 
-local OldFunction; OldFunction = hookfunction(LocalPlayer.Kick, function(...)
-	local self, Message = ...
-
-	if ((ED_AntiKick.CheckCaller and not checkcaller()) or true) and CompareInstances(self, LocalPlayer) and ED_AntiKick.Enabled then
-		if CanCastToSTDString(Message) then
-			if ED_AntiKick.SendNotifications then
-				SetCore(StarterGui, "SendNotification", {
-					Title = "Lumin Hub",
-					Text = "Successfully intercepted an attempted kick.",
-					Icon = "rbxassetid://71516332224921",
-					Duration = 2
-				})
-			end
-
-			return
+local OldBufferFromString; OldBufferFromString = hookfunction(buffer.fromstring, newcclosure(function(str)
+	if not checkcaller() then
+		local info = debug.info(2, "n")
+		if info == "" or info == nil then
+			return OldBufferFromString(str)
 		end
 	end
-end)
+	return OldBufferFromString(str)
+end))
+
+local getfenv, setfenv, rawget, rawset, rawequal = getfenv, setfenv, rawget, rawset, rawequal
+
+local function is_our_closure(f)
+	if type(f) ~= "function" then return false end
+	return checkcaller()
+end
+
+local OldGetFenv; OldGetFenv = hookfunction(getfenv, newcclosure(function(f)
+	if not checkcaller() then
+		return OldGetFenv(f or 0)
+	end
+	return OldGetFenv(f)
+end))
+
+local OldSetFenv; OldSetFenv = hookfunction(setfenv, newcclosure(function(f, env)
+	if not checkcaller() then
+		return OldSetFenv(f, env)
+	end
+	return OldSetFenv(f, env)
+end))
+
+local OldNamecall; OldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+	local method = getnamecallmethod()
+	local cleanMethod = gsub(method, "%z.*", "")
+	
+	if getgenv().ED_AntiKick.Enabled then
+		if cleanMethod == "FireServer" and self:IsA("RemoteEvent") and not self.Parent then
+			return nil
+		end
+		
+		if (cleanMethod == "Destroy" or cleanMethod == "Remove" or cleanMethod == "ClearAllChildren") and (CompareInstances(self, LocalPlayer) or self:IsDescendantOf(LocalPlayer)) then
+			return nil
+		end
+
+		if CompareInstances(self, LocalPlayer) and (gsub(cleanMethod, "^%l", string.upper) == "Kick" or lower(cleanMethod) == "kick") then
+			if (not getgenv().ED_AntiKick.CheckCaller or not checkcaller()) then
+				if getgenv().ED_AntiKick.SendNotifications then
+					SetCore(StarterGui, "SendNotification", {
+						Title = "Lumin Hub",
+						Text = "Successfully intercepted an attempted kick.",
+						Icon = "rbxassetid://71516332224921",
+						Duration = 2
+					})
+				end
+				return nil
+			end
+		end
+
+		if (cleanMethod == "FireServer" or cleanMethod == "InvokeServer") then
+			local name = self.Name
+			local lowerName = lower(name)
+			
+			if match(lowerName, "ban") or match(lowerName, "kick") or match(lowerName, "flag") or match(lowerName, "log") or match(lowerName, "report") then
+				if not checkcaller() then
+					if getgenv().ED_AntiKick.SendNotifications then
+						SetCore(StarterGui, "SendNotification", {
+							Title = "Lumin Hub",
+							Text = "Blocked Potential Delay Ban Remote: " .. name,
+							Icon = "rbxassetid://71516332224921",
+							Duration = 2
+						})
+					end
+					return nil
+				end
+			end
+
+			for _, remoteName in ipairs(moderatorRemotes) do
+				if self.Name == remoteName and self:IsDescendantOf(ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Moderator")) then
+					if getgenv().ED_AntiKick.SendNotifications then
+						SetCore(StarterGui, "SendNotification", {
+							Title = "Lumin Hub",
+							Text = "Blocked Moderator Remote: " .. remoteName,
+							Icon = "rbxassetid://71516332224921",
+							Duration = 2
+						})
+					end
+					return nil
+				end
+			end
+		end
+	end
+
+	return OldNamecall(self, ...)
+end))
+
+local OldFunction; OldFunction = hookfunction(LocalPlayer.Kick, newcclosure(function(self, ...)
+	if getgenv().ED_AntiKick.Enabled and CompareInstances(self, LocalPlayer) and not checkcaller() then
+		if getgenv().ED_AntiKick.SendNotifications then
+			SetCore(StarterGui, "SendNotification", {
+				Title = "Lumin Hub",
+				Text = "Successfully intercepted an attempted kick.",
+				Icon = "rbxassetid://71516332224921",
+				Duration = 2
+			})
+		end
+		return nil
+	end
+	return OldFunction(self, ...)
+end))
 
 if getgenv().ED_AntiKick.SendNotifications then
 	StarterGui:SetCore("SendNotification", {
